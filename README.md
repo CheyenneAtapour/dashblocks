@@ -3,7 +3,7 @@
 A small block that floats on your Mac's screen and shows what you planned for
 this part of the day. Split your day into colour-coded time blocks — say
 Meetings in the morning, Heavy Code around midday, Review in the afternoon — and
-Dashblocks shows the block you are in now, with its name and when it ends.
+Dashblocks shows the block you are in now, with its name and the times it runs.
 
 ![The Dashblocks widget during a Heavy Code block](docs/widget.png)
 
@@ -34,7 +34,9 @@ Each block has a colour, a name, and the times it runs from and to.
 
 - **Add block** adds an hour-long block after your last one.
 - The trash button deletes a block.
-- Drag rows to reorder them, or click **Sort by start time**.
+- The up arrow moves a block earlier in the day and the down arrow later: it
+  swaps places with its neighbour, and both keep their lengths. **Sort by start
+  time** puts the list in time order.
 - A block can run past midnight: set it from 10:00 PM to 1:00 AM, say.
 - Where blocks overlap, the one higher in the list wins.
 

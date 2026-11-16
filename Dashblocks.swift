@@ -74,7 +74,7 @@ final class Store: ObservableObject {
 
     /// The line under the block's name: when it ends, or, between blocks, what is next.
     func caption(at date: Date) -> String {
-        if let block = block(at: date) { return "until \(clockTime(block.end))" }
+        if let block = block(at: date) { return "\(clockTime(block.start)) – \(clockTime(block.end))" }
         if let next = next(after: date) { return "next: \(next.block.name) at \(clockTime(next.block.start))" }
         return "nothing planned"
     }
@@ -266,19 +266,26 @@ struct ConfigView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Time blocks").font(.title2.bold())
-            Text("The widget shows the block covering the current time. Where blocks overlap, the one higher in the list wins; drag rows to reorder them. A block can run past midnight.")
+            Text("The widget shows the block covering the current time. The arrows at the end of a row move a block earlier or later, swapping it with its neighbour. Where blocks overlap, the one higher in the list wins. A block can run past midnight.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            List {
-                ForEach(store.blocks) { block in
-                    BlockRow(block: binding(for: block.id)) {
-                        store.blocks.removeAll { $0.id == block.id }
+            // A plain stack, not a List: a List with draggable rows swallows clicks meant for the name fields.
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(store.blocks.enumerated()), id: \.element.id) { index, block in
+                        BlockRow(block: binding(for: block.id),
+                                 moveUp: index > 0 ? { swapInTime(index - 1) } : nil,
+                                 moveDown: index < store.blocks.count - 1 ? { swapInTime(index) } : nil,
+                                 delete: { store.blocks.removeAll { $0.id == block.id } })
+                            .padding(.horizontal, 8)
+                            .background(index.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.04))
                     }
                 }
-                .onMove { store.blocks.move(fromOffsets: $0, toOffset: $1) }
             }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1)))
             HStack {
                 Button { add() } label: { Label("Add block", systemImage: "plus") }
                 Button("Sort by start time") { store.blocks.sort { $0.start < $1.start } }
@@ -288,6 +295,21 @@ struct ConfigView: View {
         }
         .padding(16)
         .frame(minWidth: 620, minHeight: 380)
+    }
+
+    /// Swaps block `i` with the one after it, in the list and in the day: the later block takes the earlier
+    /// one's start, and the earlier one follows it, keeping both lengths and the gap between them.
+    func swapInTime(_ i: Int) {
+        var blocks = store.blocks
+        var earlier = blocks[i], later = blocks[i + 1]
+        let length = { (b: Block) in (b.end - b.start + 1440) % 1440 }
+        let gap = (later.start - earlier.end + 1440) % 1440
+        let start = earlier.start
+        (later.start, later.end) = (start, (start + length(later)) % 1440)
+        let next = (later.end + gap) % 1440
+        (earlier.start, earlier.end) = (next, (next + length(earlier)) % 1440)
+        (blocks[i], blocks[i + 1]) = (later, earlier)
+        store.blocks = blocks
     }
 
     /// A binding to the block with `id` that survives the block being deleted.
@@ -309,13 +331,26 @@ struct ConfigView: View {
 
 struct BlockRow: View {
     @Binding var block: Block
+    let moveUp: (() -> Void)?
+    let moveDown: (() -> Void)?
     let delete: () -> Void
+    /// The picker's own colour. Feeding the saved #RRGGBB back into the picker would snap its wheel and
+    /// brightness slider to the rounded sRGB colour on every drag, so only the store gets the rounded one.
+    @State private var color: Color
+
+    init(block: Binding<Block>, moveUp: (() -> Void)?, moveDown: (() -> Void)?, delete: @escaping () -> Void) {
+        _block = block
+        self.moveUp = moveUp
+        self.moveDown = moveDown
+        self.delete = delete
+        _color = State(initialValue: Color(hex: block.wrappedValue.color))
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            ColorPicker("Colour", selection: Binding(get: { Color(hex: block.color) }, set: { block.color = $0.hex }),
-                        supportsOpacity: false)
+            ColorPicker("Colour", selection: $color, supportsOpacity: false)
                 .labelsHidden()
+                .onChange(of: color) { _, new in block.color = new.hex }
             TextField("Name", text: $block.name)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 150)
@@ -323,11 +358,19 @@ struct BlockRow: View {
                 .fixedSize()
             DatePicker("to", selection: time(\.end), displayedComponents: .hourAndMinute)
                 .fixedSize()
+            Button { moveUp?() } label: { Image(systemName: "chevron.up").frame(width: 24, height: 24).contentShape(Rectangle()) }
+                .buttonStyle(.borderless)
+                .disabled(moveUp == nil)
+                .help("Move earlier, before the block above")
+            Button { moveDown?() } label: { Image(systemName: "chevron.down").frame(width: 24, height: 24).contentShape(Rectangle()) }
+                .buttonStyle(.borderless)
+                .disabled(moveDown == nil)
+                .help("Move later, after the block below")
             Button(role: .destructive, action: delete) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
                 .help("Delete this block")
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
     }
 
     /// A start or end time, as today's date at that time for the picker.
@@ -408,6 +451,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.center()
             window.setFrameAutosaveName("DashblocksConfig")
             config = window
+            // Clicking anywhere but a field ends the edit, as it does elsewhere on the Mac.
+            NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak window] event in
+                guard let window, event.window === window,
+                      let hit = window.contentView?.hitTest(event.locationInWindow) else { return event }
+                if !(hit is NSText || hit is NSTextField || hit is NSDatePicker) { window.makeFirstResponder(nil) }
+                return event
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
         config?.makeKeyAndOrderFront(nil)
